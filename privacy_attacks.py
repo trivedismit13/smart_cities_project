@@ -291,7 +291,7 @@ class MembershipInferenceAttack:
             sample_loss = loss.mean(dim=(1, 2)).item()
         return sample_loss
 
-    def evaluate(self, member_loader, non_member_loader, num_samples=200):
+    def evaluate(self, member_loader, non_member_loader, num_samples=200, n_bootstrap=1000):
         """
         Evaluates MIA success using training (member) and holdout (non-member) data.
         
@@ -366,13 +366,46 @@ class MembershipInferenceAttack:
                 best_acc = acc
                 best_thresh = thresh
 
-        optimal_pred = (losses <= best_thresh).astype(int)
+        # The attacker may also predict Member when loss >= threshold (members with higher loss);
+        # the attack strength is max(AUC, 1 - AUC) and the threshold accuracy uses the same orientation.
+        members_higher_loss = auc < 0.5
+        if members_higher_loss:
+            best_acc = -1.0
+            for thresh in sorted_thresholds:
+                acc = accuracy_score(y_true, (losses >= thresh).astype(int))
+                if acc > best_acc:
+                    best_acc = acc
+                    best_thresh = thresh
+            optimal_pred = (losses >= best_thresh).astype(int)
+        else:
+            optimal_pred = (losses <= best_thresh).astype(int)
         accuracy = float(accuracy_score(y_true, optimal_pred))
         precision = float(precision_score(y_true, optimal_pred, zero_division=0))
         recall = float(recall_score(y_true, optimal_pred, zero_division=0))
         f1 = float(f1_score(y_true, optimal_pred, zero_division=0))
 
+        # Bootstrap 95% confidence intervals over the n_members + n_non_members scored windows
+        rng = np.random.default_rng(0)
+        boot_auc, boot_strength, boot_acc = [], [], []
+        n_total = len(y_true)
+        for _ in range(n_bootstrap):
+            idx = rng.integers(0, n_total, n_total)
+            if y_true[idx].min() == y_true[idx].max():
+                continue
+            b_auc = roc_auc_score(y_true[idx], member_scores[idx])
+            boot_auc.append(b_auc)
+            boot_strength.append(max(b_auc, 1.0 - b_auc))
+            b_pred = (losses[idx] >= best_thresh) if members_higher_loss else (losses[idx] <= best_thresh)
+            boot_acc.append(accuracy_score(y_true[idx], b_pred.astype(int)))
+
         return {
+            "n_members": int(n_members),
+            "n_non_members": int(n_non_members),
+            "attack_strength": float(max(auc, 1.0 - auc)),
+            "members_higher_loss": bool(members_higher_loss),
+            "auc_ci95": [float(np.percentile(boot_auc, 2.5)), float(np.percentile(boot_auc, 97.5))],
+            "attack_strength_ci95": [float(np.percentile(boot_strength, 2.5)), float(np.percentile(boot_strength, 97.5))],
+            "accuracy_ci95": [float(np.percentile(boot_acc, 2.5)), float(np.percentile(boot_acc, 97.5))],
             "accuracy": accuracy,
             "precision": precision,
             "recall": recall,

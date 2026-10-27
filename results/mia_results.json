@@ -1,0 +1,26 @@
+{
+  "n_members": 200,
+  "n_non_members": 200,
+  "attack_strength": 0.538,
+  "members_higher_loss": true,
+  "auc_ci95": [
+    0.4106855859571044,
+    0.5197545206292342
+  ],
+  "attack_strength_ci95": [
+    0.5024194546307138,
+    0.5893144140428955
+  ],
+  "accuracy_ci95": [
+    0.505,
+    0.6025
+  ],
+  "accuracy": 0.5575,
+  "precision": 0.5851851851851851,
+  "recall": 0.395,
+  "f1": 0.4716417910447761,
+  "auc": 0.46199999999999997,
+  "optimal_threshold": 0.03865432366728783,
+  "member_mean_loss": 0.04386076126073021,
+  "non_member_mean_loss": 0.03733114689559443
+}

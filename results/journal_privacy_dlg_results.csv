@@ -1,6 +1,9 @@
-FL Method,Defense Mechanism,Noise (sigma),Recon. Pos. Error (m),Cosine Sim.,MIA AUC,Privacy Budget (epsilon)
-FedAvg,None (Unprotected Gradients),0.0,0.4373,0.3724,0.4078,Infinity (No DP Guarantee)
-FedPer,Head Withholding (Output Private),0.0,0.296,0.533,0.4078,Infinity (No DP Mechanism)
-FedAvg + DP-SGD,Gaussian Perturbation (C=1.0),0.5,2.0208,0.5915,N/A,epsilon <= 38.74 (range: 17.50-38.74)
-FedAvg + DP-SGD,Gaussian Perturbation (C=1.0),1.0,5.198,0.0508,N/A,epsilon <= 8.51 (range: 2.46-8.51)
-FedAvg + DP-SGD,Gaussian Perturbation (C=1.0),2.0,9.9,-0.2656,N/A,epsilon <= 2.80 (range: 0.82-2.80)
+Model / Defense,FL Method,Noise Multiplier (sigma),DLG Position Error (m),Input Cosine Similarity,Epsilon (delta=1e-5)
+"FedAvg (Full Gradients, Unprotected)",FedAvg,0.0,1.1048,0.5985,Infinity (No DP)
+FedPer (Head Gradients Withheld),FedPer,0.0,1.0596,0.4061,Infinity (Head Private Only)
+FedAvg + Gaussian DP (sigma=0.5),FedAvg,0.5,3.3917,0.0106,37.45
+FedAvg + Gaussian DP (sigma=1.0),FedAvg,1.0,4.9095,-0.2206,8.05
+FedAvg + Gaussian DP (sigma=2.0),FedAvg,2.0,4.1898,0.3429,2.64
+FedPer + Gaussian DP,FedPer,0.5,6.1731,-0.1872,
+FedPer + Gaussian DP,FedPer,1.0,5.4934,-0.3749,
+FedPer + Gaussian DP,FedPer,2.0,7.9135,-0.0038,

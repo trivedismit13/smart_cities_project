@@ -27,7 +27,8 @@ RANDOM_SEED = 42
 MAX_RAW_ROWS = 1_000_000  # Explicitly trimmed to 1 Million rows as requested
 DOWNSAMPLE_STEP = 5
 OBS_STEPS = 6       # 3.0 seconds observation horizon
-PRED_STEPS = 6      # 3.0 seconds prediction horizon
+# PRED_STEPS can be overridden from the environment (e.g. PRED_STEPS=10 for the 5.0 s horizon run)
+PRED_STEPS = int(os.environ.get("PRED_STEPS", 6))  # 3.0 seconds prediction horizon by default
 TOTAL_STEPS = OBS_STEPS + PRED_STEPS
 STRIDE = 3          # Sliding window stride
 MAX_VEHICLES_PER_LOC = 600  # Balanced representative vehicle sampling per domain
@@ -58,6 +59,9 @@ FEDPROX_MU = 0.01
 
 # Centralized Training Configuration
 CENTRALIZED_EPOCHS = 6
+
+# Suffix for cache/result files of non-default horizons, so a 5 s run never reuses 3 s data
+HORIZON_TAG = "" if PRED_STEPS == 6 else f"_pred{PRED_STEPS}"
 
 # Evaluation & Unit conversion
 FEET_TO_METERS = 0.3048  # NGSIM raw coordinates are in feet

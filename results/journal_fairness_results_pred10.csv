@@ -1,0 +1,13 @@
+Model,Worst-Zone ADE (m),Best-Zone ADE (m),Mean Zone ADE (m),Disparity Gap (m),Fairness CoV (%),Global Pooled ADE (m),Communication Overhead (MB)
+Constant Velocity,2.9,1.793,2.189,1.108,23.02,1.912,0.0
+Constant Acceleration,3.951,2.296,3.19,1.655,21.39,2.924,0.0
+Centralized (Pooled),2.219,1.297,1.741,0.922,21.67,1.566,15.26
+Centralized (Zone-Aware),2.444,1.435,1.878,1.009,22.41,1.666,15.26
+FedAvg (Global FL),2.428,1.317,1.858,1.111,24.43,1.65,37.24
+FedProx (mu=0.01),2.404,1.344,1.869,1.061,23.18,1.674,37.24
+FedPer (Personalized),2.203,1.424,1.779,0.779,18.11,1.62,36.65
+pFedMe (Moreau),7.616,4.003,5.745,3.613,25.72,5.915,37.24
+Isolated (US-101 Silo),9.095,2.115,4.81,6.98,63.7,6.065,0.0
+Isolated (Lankershim Silo),2.94,1.372,2.236,1.567,29.06,2.224,0.0
+Isolated (Peachtree Silo),2.959,1.783,2.19,1.177,24.86,1.888,0.0
+Isolated (Own Zone),2.115,1.372,1.772,0.743,17.26,1.651,0.0

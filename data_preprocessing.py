@@ -21,7 +21,7 @@ from torch.utils.data import Dataset, DataLoader
 from config import (
     DATA_CSV, CACHE_DIR, OBS_STEPS, PRED_STEPS, TOTAL_STEPS,
     DOWNSAMPLE_STEP, STRIDE, RANDOM_SEED, BATCH_SIZE, MAX_VEHICLES_PER_LOC,
-    MAX_RAW_ROWS
+    MAX_RAW_ROWS, HORIZON_TAG
 )
 
 class TrajectoryDataset(Dataset):
@@ -45,7 +45,7 @@ class NGSIMPreprocessor:
     def __init__(self, csv_path=DATA_CSV, cache_dir=CACHE_DIR):
         self.csv_path = csv_path
         self.cache_dir = cache_dir
-        self.cache_file = os.path.join(cache_dir, "federated_trajectory_data.npz")
+        self.cache_file = os.path.join(cache_dir, f"federated_trajectory_data{HORIZON_TAG}.npz")
         self.scalers = {}
 
     def extract_sequences_from_csv(self, max_vehicles_per_loc=MAX_VEHICLES_PER_LOC, max_raw_rows=MAX_RAW_ROWS):

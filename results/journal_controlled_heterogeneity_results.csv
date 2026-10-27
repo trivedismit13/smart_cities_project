@@ -1,4 +1,4 @@
-Heterogeneity Level,Statistical Div. (JSD),FedAvg Mean Zone ADE (m),FedPer Mean Zone ADE (m),Advantage Delta (m)
-Low,0.0524,1.019,1.095,-0.076
-Medium (Natural),0.1088,1.055,1.14,-0.085
-High,0.1335,1.094,1.361,-0.267
+Heterogeneity Regime,FedAvg Mean Zone ADE (m),FedPer Mean Zone ADE (m),Delta (m)
+Low,1.005,1.099,-0.094
+Medium,1.045,1.242,-0.197
+High,1.218,1.423,-0.206

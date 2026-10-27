@@ -1,0 +1,11 @@
+{
+  "mean_pairwise_jsd": 0.09974112087895666,
+  "gradient_divergence": 1.0014941287226975,
+  "tuned_hyperparameters": {
+    "fedprox_mu": 0.01,
+    "pfedme_lamda": 0.1,
+    "pfedme_lr_inner": 0.01,
+    "fedprox_val_ade_m": 0.8341385241434465,
+    "pfedme_val_ade_m": 4.709738227299281
+  }
+}

@@ -22,6 +22,8 @@ import sys
 import time
 import copy
 import shutil
+import json
+import argparse
 import numpy as np
 import pandas as pd
 import torch
@@ -30,7 +32,7 @@ from scipy import stats
 
 from config import (
     BASE_DIR, OUTPUT_DIR, PLOTS_DIR, DEVICE, FEET_TO_METERS,
-    OBS_STEPS, PRED_STEPS, CLIENT_NAMES
+    OBS_STEPS, PRED_STEPS, CLIENT_NAMES, HORIZON_TAG
 )
 from data_preprocessing import NGSIMPreprocessor, get_dataloaders
 from models import (
@@ -67,8 +69,32 @@ import matplotlib.pyplot as plt
 SEEDS = [42, 43, 44, 45, 46]
 ROUNDS = 12
 CENT_EPOCHS = 12
+CHECKPOINT_DIR = os.path.join(BASE_DIR, "checkpoints")
+TUNING_FILE = os.path.join(OUTPUT_DIR, "tuning_selected.json")
+DP_SGD_FILE = os.path.join(OUTPUT_DIR, "dp_sgd_training_results.csv")
 
-def run_suite():
+
+def load_tuned_hyperparameters():
+    """FedProx mu and pFedMe (lamda, lr_inner) selected on validation by tune_fedprox_pfedme.py."""
+    tuned = {'fedprox_mu': 0.01, 'pfedme_lamda': 1.0, 'pfedme_lr_inner': 0.01}
+    if os.path.exists(TUNING_FILE):
+        with open(TUNING_FILE) as f:
+            tuned.update(json.load(f))
+    return tuned
+
+
+def save_checkpoint(seed, name, model):
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    torch.save(model.state_dict(), os.path.join(CHECKPOINT_DIR, f"seed{seed}_{name}{HORIZON_TAG}.pt"))
+
+
+def run_suite(benchmark_only=False):
+    tuned = load_tuned_hyperparameters()
+    fedprox_mu = tuned['fedprox_mu']
+    pfedme_lamda = tuned['pfedme_lamda']
+    pfedme_lr_inner = tuned['pfedme_lr_inner']
+    fedprox_name = f'FedProx (mu={fedprox_mu:g})'
+    print(f"Tuned hyperparameters: {tuned}", flush=True)
     t_start = time.time()
     print("=" * 85, flush=True)
     print("STARTING COMPLETE MULTI-SEED JOURNAL BENCHMARK & AUDIT SUITE", flush=True)
@@ -91,6 +117,8 @@ def run_suite():
         for cid in range(3)
     })
     print(f"Aggregate Heterogeneity Score (JSD): {het_score:.4f}", flush=True)
+    pd.DataFrame(list(zone_stats.values())).to_csv(
+        os.path.join(OUTPUT_DIR, f"zone_statistics{HORIZON_TAG}.csv"), index=False)
 
     # 3. Multi-Seed Benchmark Evaluation
     print("\n--- PHASE 2: Multi-Seed Benchmark Evaluation ---", flush=True)
@@ -100,7 +128,7 @@ def run_suite():
         'Centralized (Pooled)',
         'Centralized (Zone-Aware)',
         'FedAvg (Global FL)',
-        'FedProx (mu=0.01)',
+        fedprox_name,
         'FedPer (Personalized)',
         'pFedMe (Moreau)',
         'Isolated (US-101 Silo)',
@@ -160,7 +188,7 @@ def run_suite():
             for cid, loaders in client_loaders.items()
         ]
         fedprox_server = FederatedServer(Seq2SeqLSTM, fedprox_clients, cent_loaders['test'], scalers, device=DEVICE)
-        fedprox_hist = fedprox_server.run_federated_training(num_rounds=ROUNDS, local_epochs=1, fedprox_mu=0.01)
+        fedprox_hist = fedprox_server.run_federated_training(num_rounds=ROUNDS, local_epochs=1, fedprox_mu=fedprox_mu)
         fedprox_model = fedprox_server.global_model
 
         # FedPer
@@ -176,12 +204,25 @@ def run_suite():
         # pFedMe
         pfedme_clients = [
             PFedMeClient(cid, loaders['name'], loaders['train'], loaders['val'], loaders['test'],
-                         Seq2SeqLSTM, scalers, device=DEVICE, lamda=1.0, K_inner=3, lr_inner=0.01)
+                         Seq2SeqLSTM, scalers, device=DEVICE, lamda=pfedme_lamda, K_inner=3, lr_inner=pfedme_lr_inner)
             for cid, loaders in client_loaders.items()
         ]
         pfedme_server = PFedMeServer(Seq2SeqLSTM, pfedme_clients, cent_loaders['test'], scalers, device=DEVICE)
-        pfedme_hist = pfedme_server.run_pfedme_training(num_rounds=ROUNDS, local_epochs=1, lamda=1.0, K_inner=3, lr_inner=0.01, beta=0.2)
+        pfedme_hist = pfedme_server.run_pfedme_training(num_rounds=ROUNDS, local_epochs=1, lamda=pfedme_lamda, K_inner=3, lr_inner=pfedme_lr_inner, beta=0.2)
         pfedme_model = pfedme_server.global_model
+
+        save_checkpoint(seed, "centralized_pooled", cent_model)
+        save_checkpoint(seed, "centralized_zone_aware", cent_za_model)
+        for cid, iso_model in iso_models.items():
+            save_checkpoint(seed, f"isolated_client{cid}", iso_model)
+        save_checkpoint(seed, "fedavg", fedavg_model)
+        save_checkpoint(seed, "fedprox", fedprox_model)
+        for c in fedper_server.clients:
+            save_checkpoint(seed, f"fedper_client{c.client_id}", c.model)
+        for c in pfedme_server.clients:
+            save_checkpoint(seed, f"pfedme_client{c.client_id}", c.personalized_model)
+        if seed_idx == 0:
+            mia_target_model = copy.deepcopy(fedavg_model)
 
         if seed_idx == 0:
             last_histories = {
@@ -197,7 +238,7 @@ def run_suite():
             'Centralized (Pooled)': {'type': 'global', 'model': cent_model},
             'Centralized (Zone-Aware)': {'type': 'za', 'model': cent_za_model},
             'FedAvg (Global FL)': {'type': 'global', 'model': fedavg_model},
-            'FedProx (mu=0.01)': {'type': 'global', 'model': fedprox_model},
+            fedprox_name: {'type': 'global', 'model': fedprox_model},
             'FedPer (Personalized)': {'type': 'fedper', 'server': fedper_server},
             'pFedMe (Moreau)': {'type': 'pfedme', 'server': pfedme_server},
             'Isolated (US-101 Silo)': {'type': 'iso_fixed', 'model': iso_models[0]},
@@ -326,98 +367,101 @@ def run_suite():
 
         print(f"  Seed {seed} completed in {time.time()-t_seed:.2f}s", flush=True)
 
-    # 4. Controlled Heterogeneity Study
-    print("\n--- PHASE 3: Controlled Heterogeneity Analysis ---", flush=True)
-    controlled_res = []
-    for level in ['low', 'medium', 'high']:
-        part = create_controlled_heterogeneity_partition(normalized_data, level=level, seed=42)
-        c_loaders, _ = get_dataloaders(part, batch_size=128)
-        # Train FedAvg & FedPer for 3 rounds
-        cl_fedavg = [FederatedClient(cid, l['name'], l['train'], l['val'], l['test'], Seq2SeqLSTM, scalers, device=DEVICE) for cid, l in c_loaders.items()]
-        srv_fedavg = FederatedServer(Seq2SeqLSTM, cl_fedavg, cent_loaders['test'], scalers, device=DEVICE)
-        srv_fedavg.run_federated_training(num_rounds=3, local_epochs=1)
+    controlled_res, dp_results, fedper_dp_points, mia_res = [], [], [], {}
+    if not benchmark_only:
+        # 4. Controlled Heterogeneity Study
+        print("\n--- PHASE 3: Controlled Heterogeneity Analysis ---", flush=True)
+        controlled_res = []
+        for level in ['low', 'medium', 'high']:
+            part = create_controlled_heterogeneity_partition(normalized_data, level=level, seed=42)
+            c_loaders, _ = get_dataloaders(part, batch_size=128)
+            # Train FedAvg & FedPer for 3 rounds
+            cl_fedavg = [FederatedClient(cid, l['name'], l['train'], l['val'], l['test'], Seq2SeqLSTM, scalers, device=DEVICE) for cid, l in c_loaders.items()]
+            srv_fedavg = FederatedServer(Seq2SeqLSTM, cl_fedavg, cent_loaders['test'], scalers, device=DEVICE)
+            srv_fedavg.run_federated_training(num_rounds=3, local_epochs=1)
 
-        cl_fedper = [FedPerClient(cid, l['name'], l['train'], l['val'], l['test'], Seq2SeqLSTM, scalers, device=DEVICE) for cid, l in c_loaders.items()]
-        srv_fedper = FedPerServer(Seq2SeqLSTM, cl_fedper, cent_loaders['test'], scalers, device=DEVICE)
-        srv_fedper.run_fedper_training(num_rounds=3, local_epochs=1)
+            cl_fedper = [FedPerClient(cid, l['name'], l['train'], l['val'], l['test'], Seq2SeqLSTM, scalers, device=DEVICE) for cid, l in c_loaders.items()]
+            srv_fedper = FedPerServer(Seq2SeqLSTM, cl_fedper, cent_loaders['test'], scalers, device=DEVICE)
+            srv_fedper.run_fedper_training(num_rounds=3, local_epochs=1)
 
-        # Evaluate mean zone ADE
-        fedavg_z_ades = [evaluate_model_on_loader(srv_fedavg.global_model, c_loaders[c]['test'], scalers, device=DEVICE)['ADE_m'] for c in range(3)]
-        fedper_z_ades = [evaluate_model_on_loader(srv_fedper.clients[c].model, c_loaders[c]['test'], scalers, device=DEVICE)['ADE_m'] for c in range(3)]
+            # Evaluate mean zone ADE
+            fedavg_z_ades = [evaluate_model_on_loader(srv_fedavg.global_model, c_loaders[c]['test'], scalers, device=DEVICE)['ADE_m'] for c in range(3)]
+            fedper_z_ades = [evaluate_model_on_loader(srv_fedper.clients[c].model, c_loaders[c]['test'], scalers, device=DEVICE)['ADE_m'] for c in range(3)]
 
-        controlled_res.append({
-            'Heterogeneity Regime': level.capitalize(),
-            'FedAvg Mean Zone ADE (m)': round(float(np.mean(fedavg_z_ades)), 3),
-            'FedPer Mean Zone ADE (m)': round(float(np.mean(fedper_z_ades)), 3),
-            'Delta (m)': round(float(np.mean(fedavg_z_ades) - np.mean(fedper_z_ades)), 3)
-        })
+            controlled_res.append({
+                'Heterogeneity Regime': level.capitalize(),
+                'FedAvg Mean Zone ADE (m)': round(float(np.mean(fedavg_z_ades)), 3),
+                'FedPer Mean Zone ADE (m)': round(float(np.mean(fedper_z_ades)), 3),
+                'Delta (m)': round(float(np.mean(fedavg_z_ades) - np.mean(fedper_z_ades)), 3)
+            })
 
-    # 5. Privacy Attack & Defense Study
-    print("\n--- PHASE 4: Privacy Attack & Defense Audit ---", flush=True)
-    # Target gradient reconstruction on victim sample (batch size 1)
-    victim_loader = client_loaders[0]['train']
-    batch = next(iter(victim_loader))
-    victim_x, victim_y = batch[0][:1].to(DEVICE), batch[1][:1].to(DEVICE)
-    eval_model = Seq2SeqLSTM().to(DEVICE)
+        # 5. Privacy Attack & Defense Study
+        print("\n--- PHASE 4: Privacy Attack & Defense Audit ---", flush=True)
+        # Target gradient reconstruction on victim sample (batch size 1)
+        victim_loader = client_loaders[0]['train']
+        batch = next(iter(victim_loader))
+        victim_x, victim_y = batch[0][:1].to(DEVICE), batch[1][:1].to(DEVICE)
+        eval_model = Seq2SeqLSTM().to(DEVICE)
 
-    attacker = GradientReconstructionAttack(eval_model, device=DEVICE)
-    full_grad = attacker.compute_target_gradient(victim_x, victim_y, shared_only=False)
-    shared_grad = attacker.compute_target_gradient(victim_x, victim_y, shared_only=True)
+        attacker = GradientReconstructionAttack(eval_model, device=DEVICE)
+        full_grad = attacker.compute_target_gradient(victim_x, victim_y, shared_only=False)
+        shared_grad = attacker.compute_target_gradient(victim_x, victim_y, shared_only=True)
 
-    # Attacks
-    rec_in_full, rec_tg_full, _ = attacker.reconstruct(full_grad, num_iterations=150, lr=0.1, shared_only=False)
-    rec_in_shared, rec_tg_shared, _ = attacker.reconstruct(shared_grad, num_iterations=150, lr=0.1, shared_only=True)
+        # Attacks
+        rec_in_full, rec_tg_full, _ = attacker.reconstruct(full_grad, num_iterations=150, lr=0.1, shared_only=False)
+        rec_in_shared, rec_tg_shared, _ = attacker.reconstruct(shared_grad, num_iterations=150, lr=0.1, shared_only=True)
 
-    m_full = attacker.evaluate_reconstruction(victim_x, victim_y, rec_in_full, rec_tg_full)
-    m_shared = attacker.evaluate_reconstruction(victim_x, victim_y, rec_in_shared, rec_tg_shared)
+        m_full = attacker.evaluate_reconstruction(victim_x, victim_y, rec_in_full, rec_tg_full)
+        m_shared = attacker.evaluate_reconstruction(victim_x, victim_y, rec_in_shared, rec_tg_shared)
 
-    # DP Gaussian noise tests
-    dp_results = []
-    dp_results.append({
-        'Model / Defense': 'FedAvg (Full Gradients, Unprotected)',
-        'FL Method': 'FedAvg',
-        'Noise Multiplier (sigma)': 0.0,
-        'DLG Position Error (m)': round(m_full['position_error'], 4),
-        'Input Cosine Similarity': round(m_full['input_cosine_sim'], 4),
-        'Epsilon (delta=1e-5)': 'Infinity (No DP)'
-    })
-    dp_results.append({
-        'Model / Defense': 'FedPer (Head Gradients Withheld)',
-        'FL Method': 'FedPer',
-        'Noise Multiplier (sigma)': 0.0,
-        'DLG Position Error (m)': round(m_shared['position_error'], 4),
-        'Input Cosine Similarity': round(m_shared['input_cosine_sim'], 4),
-        'Epsilon (delta=1e-5)': 'Infinity (Head Private Only)'
-    })
-
-    dp_steps = ROUNDS * (len(client_loaders[0]['train']))
-    fedper_dp_points = []
-    for sigma in [0.5, 1.0, 2.0]:
-        noised_grad = [g + torch.normal(0.0, sigma, size=g.shape, device=DEVICE) for g in full_grad]
-        r_in_dp, r_tg_dp, _ = attacker.reconstruct(noised_grad, num_iterations=150, lr=0.1, shared_only=False)
-        m_dp = attacker.evaluate_reconstruction(victim_x, victim_y, r_in_dp, r_tg_dp)
-        eps = DifferentialPrivacyDefense.compute_epsilon(sigma, dp_steps, delta=1e-5, sample_rate=128/len(client_loaders[0]['train'].dataset))
+        # DP Gaussian noise tests
+        dp_results = []
         dp_results.append({
-            'Model / Defense': f'FedAvg + Gaussian DP (sigma={sigma})',
+            'Model / Defense': 'FedAvg (Full Gradients, Unprotected)',
             'FL Method': 'FedAvg',
-            'Noise Multiplier (sigma)': sigma,
-            'DLG Position Error (m)': round(m_dp['position_error'], 4),
-            'Input Cosine Similarity': round(m_dp['input_cosine_sim'], 4),
-            'Epsilon (delta=1e-5)': f"{eps:.2f}"
+            'Noise Multiplier (sigma)': 0.0,
+            'DLG Position Error (m)': round(m_full['position_error'], 4),
+            'Input Cosine Similarity': round(m_full['input_cosine_sim'], 4),
+            'Epsilon (delta=1e-5)': 'Infinity (No DP)'
+        })
+        dp_results.append({
+            'Model / Defense': 'FedPer (Head Gradients Withheld)',
+            'FL Method': 'FedPer',
+            'Noise Multiplier (sigma)': 0.0,
+            'DLG Position Error (m)': round(m_shared['position_error'], 4),
+            'Input Cosine Similarity': round(m_shared['input_cosine_sim'], 4),
+            'Epsilon (delta=1e-5)': 'Infinity (Head Private Only)'
         })
 
-        noised_shared_grad = [g + torch.normal(0.0, sigma, size=g.shape, device=DEVICE) for g in shared_grad]
-        r_in_p_dp, r_tg_p_dp, _ = attacker.reconstruct(noised_shared_grad, num_iterations=150, lr=0.1, shared_only=True)
-        m_p_dp = attacker.evaluate_reconstruction(victim_x, victim_y, r_in_p_dp, r_tg_p_dp)
-        fedper_dp_points.append({
-            'Noise Multiplier (sigma)': sigma,
-            'DLG Position Error (m)': round(m_p_dp['position_error'], 4),
-            'Input Cosine Similarity': round(m_p_dp['input_cosine_sim'], 4)
-        })
+        dp_steps = ROUNDS * (len(client_loaders[0]['train']))
+        fedper_dp_points = []
+        for sigma in [0.5, 1.0, 2.0]:
+            noised_grad = [g + torch.normal(0.0, sigma, size=g.shape, device=DEVICE) for g in full_grad]
+            r_in_dp, r_tg_dp, _ = attacker.reconstruct(noised_grad, num_iterations=150, lr=0.1, shared_only=False)
+            m_dp = attacker.evaluate_reconstruction(victim_x, victim_y, r_in_dp, r_tg_dp)
+            eps = DifferentialPrivacyDefense.compute_epsilon(sigma, dp_steps, delta=1e-5, sample_rate=128/len(client_loaders[0]['train'].dataset))
+            dp_results.append({
+                'Model / Defense': f'FedAvg + Gaussian DP (sigma={sigma})',
+                'FL Method': 'FedAvg',
+                'Noise Multiplier (sigma)': sigma,
+                'DLG Position Error (m)': round(m_dp['position_error'], 4),
+                'Input Cosine Similarity': round(m_dp['input_cosine_sim'], 4),
+                'Epsilon (delta=1e-5)': f"{eps:.2f}"
+            })
 
-    # MIA Evaluation
-    mia = MembershipInferenceAttack(eval_model, device=DEVICE)
-    mia_res = mia.evaluate(client_loaders[0]['train'], client_loaders[0]['test'], num_samples=200)
+            noised_shared_grad = [g + torch.normal(0.0, sigma, size=g.shape, device=DEVICE) for g in shared_grad]
+            r_in_p_dp, r_tg_p_dp, _ = attacker.reconstruct(noised_shared_grad, num_iterations=150, lr=0.1, shared_only=True)
+            m_p_dp = attacker.evaluate_reconstruction(victim_x, victim_y, r_in_p_dp, r_tg_p_dp)
+            fedper_dp_points.append({
+                'Noise Multiplier (sigma)': sigma,
+                'DLG Position Error (m)': round(m_p_dp['position_error'], 4),
+                'Input Cosine Similarity': round(m_p_dp['input_cosine_sim'], 4)
+            })
+
+        # MIA Evaluation
+        # MIA on the converged FedAvg global model of seed 42 (members: Client 0 train, non-members: Client 0 test)
+        mia = MembershipInferenceAttack(mia_target_model, device=DEVICE)
+        mia_res = mia.evaluate(client_loaders[0]['train'], client_loaders[0]['test'], num_samples=200)
 
     # 6. Communication Overhead (MiB)
     comm_mib = {
@@ -426,7 +470,7 @@ def run_suite():
         'Centralized (Pooled)': 15.26,
         'Centralized (Zone-Aware)': 15.26,
         'FedAvg (Global FL)': round(ROUNDS * 2 * 3 * model_kb / 1024.0, 2),
-        'FedProx (mu=0.01)': round(ROUNDS * 2 * 3 * model_kb / 1024.0, 2),
+        fedprox_name: round(ROUNDS * 2 * 3 * model_kb / 1024.0, 2),
         'FedPer (Personalized)': round(ROUNDS * 2 * 3 * 521.25 / 1024.0, 2),
         'pFedMe (Moreau)': round(ROUNDS * 2 * 3 * model_kb / 1024.0, 2),
         'Isolated (US-101 Silo)': 0.00,
@@ -489,6 +533,29 @@ def run_suite():
             'Global Pooled ADE (m)': round(float(np.mean(seed_records[m]['Global Pooled']['ADE_m'])), 3),
             'Communication Overhead (MB)': comm_mib[m]
         })
+
+    # 8b. Write result tables directly from the computed records
+    per_seed_rows = []
+    for m in model_names:
+        for d in domains:
+            for i, seed in enumerate(SEEDS):
+                rec = seed_records[m][d]
+                per_seed_rows.append({'Seed': seed, 'Model': m, 'Domain': d,
+                                      **{k: rec[k][i] for k in rec}})
+    pd.DataFrame(per_seed_rows).to_csv(os.path.join(OUTPUT_DIR, f"per_seed_benchmark_results{HORIZON_TAG}.csv"), index=False)
+    pd.DataFrame(summary_table).to_csv(os.path.join(OUTPUT_DIR, f"journal_benchmark_results{HORIZON_TAG}.csv"), index=False)
+    pd.DataFrame(fairness_rows).to_csv(os.path.join(OUTPUT_DIR, f"journal_fairness_results{HORIZON_TAG}.csv"), index=False)
+    if benchmark_only:
+        print(f"Benchmark-only run finished in {(time.time() - t_start)/60.0:.2f} mins", flush=True)
+        return summary_table, fairness_rows, controlled_res, dp_results, mia_res, het_score
+    pd.DataFrame(controlled_res).to_csv(os.path.join(OUTPUT_DIR, "journal_controlled_heterogeneity_results.csv"), index=False)
+    pd.DataFrame(dp_results + [{'Model / Defense': 'FedPer + Gaussian DP', 'FL Method': 'FedPer', **p} for p in fedper_dp_points]).to_csv(
+        os.path.join(OUTPUT_DIR, "journal_privacy_dlg_results.csv"), index=False)
+    with open(os.path.join(OUTPUT_DIR, "mia_results.json"), "w") as f:
+        json.dump(mia_res, f, indent=2)
+    with open(os.path.join(OUTPUT_DIR, "heterogeneity_summary.json"), "w") as f:
+        json.dump({'mean_pairwise_jsd': float(het_score), 'gradient_divergence': grad_div,
+                   'tuned_hyperparameters': tuned}, f, indent=2, default=str)
 
     # 9. Generate Plots with Typography >= 8pt
     print("\n--- PHASE 6: Figure Generation (Ensuring font >= 8pt) ---", flush=True)
@@ -642,7 +709,7 @@ def run_suite():
 
     # Fig 9: Spatial fairness disparity
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    models_to_plot = ['Centralized (Pooled)', 'FedAvg (Global FL)', 'FedProx (mu=0.01)', 'FedPer (Personalized)', 'pFedMe (Moreau)']
+    models_to_plot = ['Centralized (Pooled)', 'FedAvg (Global FL)', fedprox_name, 'FedPer (Personalized)', 'pFedMe (Moreau)']
     f_sub = [r for r in fairness_rows if r['Model'] in models_to_plot]
     labels_short = ['Centralized', 'FedAvg', 'FedProx', 'FedPer (PFL)', 'pFedMe (PFL)']
     x_pos = np.arange(len(labels_short))
@@ -701,17 +768,23 @@ def run_suite():
     pareto_points = [
         ('FedPer (Personalized)', float(np.mean(seed_records['FedPer (Personalized)']['Global Pooled']['ADE_m'])), m_shared['position_error'], comm_mib['FedPer (Personalized)'], '#2ca02c', '*'),
         ('FedAvg (Global FL)', float(np.mean(seed_records['FedAvg (Global FL)']['Global Pooled']['ADE_m'])), m_full['position_error'], comm_mib['FedAvg (Global FL)'], '#d62728', 'o'),
-        ('FedProx (mu=0.01)', float(np.mean(seed_records['FedProx (mu=0.01)']['Global Pooled']['ADE_m'])), m_full['position_error'], comm_mib['FedProx (mu=0.01)'], '#ff7f0e', 's'),
+        (fedprox_name, float(np.mean(seed_records[fedprox_name]['Global Pooled']['ADE_m'])), m_full['position_error'], comm_mib[fedprox_name], '#ff7f0e', 's'),
         ('pFedMe (Moreau)', float(np.mean(seed_records['pFedMe (Moreau)']['Global Pooled']['ADE_m'])), m_shared['position_error'], comm_mib['pFedMe (Moreau)'], '#9467bd', '^'),
         ('Centralized (Pooled)', float(np.mean(seed_records['Centralized (Pooled)']['Global Pooled']['ADE_m'])), 0.0, comm_mib['Centralized (Pooled)'], '#1f77b4', 'D'),
-        ('FedAvg + DP (sigma=0.5)', float(np.mean(seed_records['FedAvg (Global FL)']['Global Pooled']['ADE_m'])) + 0.08, dp_results[2]['DLG Position Error (m)'], comm_mib['FedAvg (Global FL)'], '#e377c2', 'P'),
-        ('FedAvg + DP (sigma=1.0)', float(np.mean(seed_records['FedAvg (Global FL)']['Global Pooled']['ADE_m'])) + 0.22, dp_results[3]['DLG Position Error (m)'], comm_mib['FedAvg (Global FL)'], '#8c564b', 'X'),
         ('Isolated (Own Zone)', float(np.mean(seed_records['Isolated (Own Zone)']['Global Pooled']['ADE_m'])), 12.0, comm_mib['Isolated (Own Zone)'], '#7f7f7f', 'v')
     ]
+    # DP-SGD points use the measured pooled ADE of models trained with DP-SGD (run_dp_sgd_training.py)
+    if os.path.exists(DP_SGD_FILE):
+        dp_df = pd.read_csv(DP_SGD_FILE)
+        dp_df = dp_df[dp_df['Domain'] == 'Global Pooled'].groupby('Noise Multiplier (sigma)')['ADE (m)'].mean()
+        for (sigma, col, mk), r in zip([(0.5, '#e377c2', 'P'), (1.0, '#8c564b', 'X')], dp_results[2:4]):
+            if sigma in dp_df.index:
+                pareto_points.append((f'FedAvg + DP (sigma={sigma})', float(dp_df[sigma]),
+                                      r['DLG Position Error (m)'], comm_mib['FedAvg (Global FL)'], col, mk))
     text_offsets = {
         'FedPer (Personalized)': (-45, 12),
         'FedAvg (Global FL)': (15, -12),
-        'FedProx (mu=0.01)': (15, 12),
+        fedprox_name: (15, 12),
         'Centralized (Pooled)': (15, -12),
         'FedAvg + DP (sigma=0.5)': (15, 10),
         'FedAvg + DP (sigma=1.0)': (15, 10),
@@ -769,7 +842,8 @@ def run_suite():
     for r in dp_results:
         print(f"{r['Model / Defense']:40s} | Pos Err: {r['DLG Position Error (m)']:.4f} m | "
               f"Cos Sim: {r['Input Cosine Similarity']:.4f} | Epsilon: {r['Epsilon (delta=1e-5)']}")
-    print(f"MIA AUC: {mia_res['auc']:.4f} | MIA Accuracy: {mia_res['accuracy']*100:.2f}%")
+    print(f"MIA AUC: {mia_res['auc']:.4f} (95% CI {mia_res['auc_ci95'][0]:.3f}-{mia_res['auc_ci95'][1]:.3f}) | "
+          f"Attack strength max(AUC,1-AUC): {mia_res['attack_strength']:.4f} | MIA Accuracy: {mia_res['accuracy']*100:.2f}%")
 
     print("\n--- TABLE VI: SPATIAL FAIRNESS & DISPARITY ---")
     for r in fairness_rows:
@@ -782,4 +856,8 @@ def run_suite():
 
 
 if __name__ == '__main__':
-    run_suite()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--benchmark-only', action='store_true',
+                        help='Run only the multi-seed benchmark (used for the PRED_STEPS=10 / 5.0 s horizon run)')
+    args = parser.parse_args()
+    run_suite(benchmark_only=args.benchmark_only)
